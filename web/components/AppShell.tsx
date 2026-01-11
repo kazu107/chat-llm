@@ -1010,9 +1010,9 @@ export default function AppShell() {
                 <div
                     ref={listRef}
                     onScroll={onListScroll}
+                    className="chatScroll"
                     style={{
                         flex: 1,
-                        overflowY: "auto",
                         padding: "18px 18px 120px",
                     }}
                 >

@@ -17,7 +17,26 @@
     --contentW: 880px;
 }
 
-* { box-sizing: border-box; }
+* {
+    box-sizing: border-box;
+    scrollbar-color: rgba(167,173,189,0.6) var(--panel2);
+    scrollbar-width: thin;
+}
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+*::-webkit-scrollbar-track {
+    background: var(--panel2);
+}
+*::-webkit-scrollbar-thumb {
+    background: rgba(167,173,189,0.45);
+    border-radius: 999px;
+    border: 2px solid var(--panel2);
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(167,173,189,0.7);
+}
 html, body {
     height: 100%;
     margin: 0;
@@ -224,6 +243,11 @@ kbd {
 .content {
     overflow: auto;
 }
+.chatScroll {
+    overflow-y: scroll;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+}
 
 .thread {
     max-width: var(--contentW);
@@ -392,12 +416,11 @@ kbd {
 .toastBody { color: var(--muted); font-size: 12px; }
 
 .md { line-height: 1.45; }
-.md > *:first-child { margin-top: 0; }
-.md > *:last-child { margin-bottom: 0; }
-.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 6px 0 4px; line-height: 1.25; }
-.md p { margin: 4px 0; }
-.md ul, .md ol { margin: 4px 0 4px 16px; padding-left: 0; }
-.md li { margin: 2px 0; }
+.md > * { margin: 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0; line-height: 1.25; }
+.md p { margin: 0; }
+.md ul, .md ol { margin: 0; padding-left: 16px; }
+.md li { margin: 0; }
 .md code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 12.5px;
