@@ -4,11 +4,44 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+
+async function copyPlain(text: string) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch {
+        try {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.left = "-9999px";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            ta.remove();
+            return true;
+        } catch {
+            return false;
+        }
+    }
+}
+
+function extractText(node: React.ReactNode): string {
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join("");
+    if (React.isValidElement(node)) {
+        const el = node as React.ReactElement<any, any>;
+        const children: React.ReactNode = (el.props as { children?: React.ReactNode }).children;
+        return extractText(children ?? "");
+    }
+    return "";
+}
 
 export type MarkdownViewProps = {
-    /** AppShell などで <Markdown text="..."/> で渡したい場合 */
+    /** AppShellなどで <Markdown text="..."/> で渡した場合 */
     text?: string;
-    /** <Markdown>...</Markdown> で渡したい場合 */
+    /** <Markdown>...</Markdown> で渡した場合 */
     children?: React.ReactNode;
 };
 
@@ -23,57 +56,52 @@ export default function Markdown(props: MarkdownViewProps) {
                     : String(props.children);
 
     return (
-        <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-                // react-markdown v10 では inline prop が無いので、className で判定する
-                code({ className, children, ...rest }) {
-                    const raw = String(children ?? "");
-                    const match = /language-([\w-]+)/.exec(className ?? "");
+        <div className="md">
+            <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                components={{
+                    code({ className, children, ...rest }) {
+                        const isBlock = Boolean(className && /^language-/.test(className));
+                        const raw = extractText(children);
+                        const lang = (className ?? "").replace("language-", "") || "code";
 
-                    // ブロックコード（```lang）
-                    if (match) {
+                        if (isBlock) {
+                            return (
+                                <div className="codeBlock">
+                                    <div className="codeBlockHeader">
+                                        <span className="codeLang">{lang}</span>
+                                        <button
+                                            type="button"
+                                            className="codeCopy"
+                                            onClick={() => copyPlain(raw)}
+                                        >
+                                            Copy
+                                        </button>
+                                    </div>
+                                    <pre className={`codePre ${className ?? ""}`}>
+                                        <code className={className} {...rest}>
+                                            {children}
+                                        </code>
+                                    </pre>
+                                </div>
+                            );
+                        }
+
                         return (
-                            <pre
-                                style={{
-                                    margin: "12px 0",
-                                    padding: 12,
-                                    borderRadius: 12,
-                                    overflowX: "auto",
-                                    background: "rgba(255,255,255,0.06)",
-                                    border: "1px solid rgba(255,255,255,0.10)",
-                                }}
-                            >
-                <code className={className} {...rest}>
-                  {raw.replace(/\n$/, "")}
-                </code>
-              </pre>
+                            <code className={className} {...rest}>
+                                {children}
+                            </code>
                         );
-                    }
-
-                    // インラインコード（`code`）
-                    return (
-                        <code
-                            style={{
-                                padding: "2px 6px",
-                                borderRadius: 8,
-                                background: "rgba(255,255,255,0.08)",
-                                border: "1px solid rgba(255,255,255,0.10)",
-                            }}
-                            className={className}
-                            {...rest}
-                        >
-                            {raw}
-                        </code>
-                    );
-                },
-                pre({ children }) {
-                    // code側でpreを描画しているので、二重にならないよう素通し
-                    return <>{children}</>;
-                },
-            }}
-        >
-            {content}
-        </ReactMarkdown>
+                    },
+                    pre({ children }) {
+                        // code側でpreを描画するため、ここでは素通し
+                        return <>{children}</>;
+                    },
+                }}
+            >
+                {content}
+            </ReactMarkdown>
+        </div>
     );
 }

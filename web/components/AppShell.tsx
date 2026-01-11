@@ -984,7 +984,7 @@ export default function AppShell() {
             </aside>
 
             {/* Main */}
-            <main style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+            <main style={{ display: "flex", flexDirection: "column", minWidth: 0, minHeight: "100vh", position: "relative" }}>
                 {/* Header */}
                 <header
                     style={{
@@ -1013,7 +1013,7 @@ export default function AppShell() {
                     style={{
                         flex: 1,
                         overflowY: "auto",
-                        padding: "18px 18px 8px",
+                        padding: "18px 18px 120px",
                     }}
                 >
                     <div style={{ maxWidth: 980, margin: "0 auto", display: "grid", gap: 14 }}>
@@ -1045,10 +1045,16 @@ export default function AppShell() {
                 {/* Composer */}
                 <div
                     style={{
+                        position: "sticky",
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
                         borderTop: "1px solid rgba(255,255,255,0.08)",
                         padding: 14,
-                        background: "rgba(10,14,19,0.65)",
+                        background: "rgba(10,14,19,0.85)",
                         backdropFilter: "blur(10px)",
+                        boxShadow: "0 -10px 30px rgba(0,0,0,0.45)",
+                        zIndex: 5,
                     }}
                 >
                     <div style={{ maxWidth: 980, margin: "0 auto", display: "flex", gap: 10, alignItems: "flex-end" }}>
@@ -1181,6 +1187,17 @@ function MessageRow(props: {
 
     const bubbleBg = isUser ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
     const bubbleBorder = isUser ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.10)";
+    const showActions = !(isUser && props.isEditing);
+
+    const bubbleStyle: React.CSSProperties = {
+        borderRadius: 16,
+        border: `1px solid ${bubbleBorder}`,
+        background: bubbleBg,
+        padding: showActions ? "14px 14px 46px 14px" : 14,
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+        position: "relative",
+    };
 
     const metaLine = (() => {
         if (!isAssistant) return "";
@@ -1205,16 +1222,7 @@ function MessageRow(props: {
                 }}
             >
                 <div style={{ maxWidth: "82%", width: "fit-content" }}>
-                    <div
-                        style={{
-                            borderRadius: 16,
-                            border: `1px solid ${bubbleBorder}`,
-                            background: bubbleBg,
-                            padding: 14,
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                        }}
-                    >
+                    <div style={bubbleStyle}>
                         {isUser && props.isEditing ? (
                             <div style={{ display: "grid", gap: 10 }}>
                 <textarea
@@ -1262,6 +1270,42 @@ function MessageRow(props: {
                         ) : (
                             <div>{m.content}</div>
                         )}
+
+                        {showActions && (
+                            <div
+                                style={{
+                                    position: "absolute",
+                                    bottom: 10,
+                                    left: isAssistant ? 12 : "auto",
+                                    right: isUser ? 12 : "auto",
+                                    display: "flex",
+                                    gap: 8,
+                                    paddingTop: 6,
+                                    alignItems: "center",
+                                }}
+                            >
+                                <IconButton title="Copy" onClick={props.onCopy}>
+                                    <IconCopy />
+                                </IconButton>
+
+                                {isUser && !props.isEditing && (
+                                    <>
+                                        <IconButton title="Edit" onClick={props.onEdit} disabled={props.isStreaming}>
+                                            <IconEdit />
+                                        </IconButton>
+                                        <IconButton title="Resend" onClick={props.onResend} disabled={props.isStreaming}>
+                                            <IconRefresh />
+                                        </IconButton>
+                                    </>
+                                )}
+
+                                {isAssistant && (
+                                    <IconButton title="Regenerate" onClick={props.onRegenerate} disabled={props.isStreaming}>
+                                        <IconRefresh />
+                                    </IconButton>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {isAssistant && metaLine && (
@@ -1274,30 +1318,6 @@ function MessageRow(props: {
                         <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
                             Stopped.
                         </div>
-                    )}
-                </div>
-
-                {/* Actions (small icons) */}
-                <div style={{ display: "flex", gap: 8, paddingTop: 2, opacity: 0.95 }}>
-                    <IconButton title="Copy" onClick={props.onCopy}>
-                        <IconCopy />
-                    </IconButton>
-
-                    {isUser && !props.isEditing && (
-                        <>
-                            <IconButton title="Edit" onClick={props.onEdit} disabled={props.isStreaming}>
-                                <IconEdit />
-                            </IconButton>
-                            <IconButton title="Resend" onClick={props.onResend} disabled={props.isStreaming}>
-                                <IconRefresh />
-                            </IconButton>
-                        </>
-                    )}
-
-                    {isAssistant && (
-                        <IconButton title="Regenerate" onClick={props.onRegenerate} disabled={props.isStreaming}>
-                            <IconRefresh />
-                        </IconButton>
                     )}
                 </div>
             </div>

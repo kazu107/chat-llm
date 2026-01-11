@@ -15,7 +15,10 @@
     "react-markdown": "10.1.0",
     "remark-gfm": "^4.0.1",
     "highlight.js": "^11.11.1",
-    "rehype-highlight": "^7.0.2"
+    "rehype-highlight": "^7.0.2",
+    "lowlight": "^3.3.0",
+    "hast-util-is-element": "^3.0.0",
+    "unist-util-find-after": "^5.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
