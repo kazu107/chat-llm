@@ -1,5 +1,6 @@
 // app/api/chat/route.ts
 import { NextResponse } from "next/server";
+import { getServerById } from "../../../lib/vllmServers";
 
 export const runtime = "nodejs";
 
@@ -9,11 +10,30 @@ type ChatRequest = {
     temperature?: number;
     max_tokens?: number;
     model?: string;
+    base_url?: string;
+    api_key?: string;
+    server_id?: string;
 };
 
 function getEnv(name: string, fallback: string) {
     const v = process.env[name];
     return (v && v.trim().length > 0) ? v.trim() : fallback;
+}
+
+function normalizeBaseUrl(raw?: string) {
+    if (!raw) return null;
+    const trimmed = raw.trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    try {
+        new URL(trimmed);
+        return trimmed;
+    } catch {
+        return null;
+    }
+}
+
+function ensureV1(baseUrl: string) {
+    return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 }
 
 export async function POST(req: Request) {
@@ -24,9 +44,26 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
 
-    const baseUrl = getEnv("VLLM_BASE_URL", "http://vllm-lfm25-jp:8000/v1"); // docker compose network内想定
-    const model = body.model ?? getEnv("VLLM_MODEL", "LiquidAI/LFM2.5-1.2B-JP");
-    const apiKey = getEnv("VLLM_API_KEY", "EMPTY");
+    const serverId = typeof body.server_id === "string" ? body.server_id.trim() : "";
+    const server = serverId ? getServerById(serverId) : null;
+    if (serverId && !server) {
+        return NextResponse.json({ error: "Unknown server_id" }, { status: 400 });
+    }
+
+    const baseUrlOverride = normalizeBaseUrl(body.base_url);
+    if (body.base_url && !baseUrlOverride) {
+        return NextResponse.json({ error: "Invalid base_url" }, { status: 400 });
+    }
+
+    const baseUrl = ensureV1(
+        server?.baseUrl ?? baseUrlOverride ?? getEnv("VLLM_BASE_URL", "http://vllm-lfm25-jp:8000/v1")
+    );
+    const requestedModel = typeof body.model === "string" ? body.model.trim() : "";
+    const fallbackModel = server?.models?.[0]?.id ?? getEnv("VLLM_MODEL", "LiquidAI/LFM2.5-1.2B-JP");
+    const model = requestedModel || fallbackModel;
+    const apiKey = server
+        ? (server.apiKey ?? getEnv("VLLM_API_KEY", ""))
+        : (typeof body.api_key === "string" ? body.api_key.trim() : "") || getEnv("VLLM_API_KEY", "");
 
     const upstreamUrl = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
 
@@ -46,14 +83,16 @@ export async function POST(req: Request) {
 
     let upstream: Response;
     try {
+        const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+        };
+        if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
         upstream = await fetch(upstreamUrl, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${apiKey}`,
-            },
+            headers,
             body: JSON.stringify(upstreamPayload),
-            signal: req.signal, // クライアントが中断したら upstream も止まる
+            signal: req.signal, // ????????????Eupstream ????E
         });
     } catch (e: any) {
         return NextResponse.json(

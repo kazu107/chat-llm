@@ -47,6 +47,54 @@ services:
       start_period: 180s
 
 
+  vllm-qwen:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-qwen
+    restart: unless-stopped
+    gpus: all
+    ipc: host
+    ports:
+      - "8001:8001"
+    environment:
+      HF_TOKEN: ${HF_TOKEN-}
+      HF_HOME: /cache/hf
+      HF_HUB_CACHE: /cache/hf/hub
+      HF_XET_CACHE: /cache/hf/xet
+      VLLM_CACHE_ROOT: /cache/vllm
+      VLLM_API_KEY: ${VLLM_API_KEY}
+
+    volumes:
+      - "${HOST_CACHE_ROOT}/hf:/cache/hf"
+      - "${HOST_CACHE_ROOT}/vllm:/cache/vllm"
+
+    # Qwen server
+    command:
+      - "Qwen/Qwen2.5-1.5B-Instruct"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8001"
+      - "--dtype"
+      - "${VLLM_DTYPE}"
+      - "--max-model-len"
+      - "${VLLM_MAX_MODEL_LEN}"
+      - "--gpu-memory-utilization"
+      - "${VLLM_GPU_MEMORY_UTILIZATION}"
+      - "--api-key"
+      - "${VLLM_API_KEY}"
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import os,sys,urllib.request; url='http://127.0.0.1:8001/health'; req=urllib.request.Request(url); k=os.getenv('VLLM_API_KEY'); req.add_header('Authorization','Bearer '+k) if k else None; urllib.request.urlopen(req, timeout=2).read(); sys.exit(0)\""
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 180s
+
+
   web:
     build:
       context: ./web
@@ -58,6 +106,9 @@ services:
       VLLM_BASE_URL: http://vllm:8000/v1
       VLLM_API_KEY: ${VLLM_API_KEY}
       VLLM_MODEL: ${VLLM_MODEL}
+      VLLM_SERVERS: ${VLLM_SERVERS}
+      VLLM_SERVER_NAME: ${VLLM_SERVER_NAME}
+      VLLM_MODELS: ${VLLM_MODELS}
     depends_on:
       vllm:
         condition: service_healthy

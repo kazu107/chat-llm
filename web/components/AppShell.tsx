@@ -34,7 +34,23 @@ type Conversation = {
     systemPrompt: string;
     temperature: number;
     maxTokens: number;
+    modelId?: string;
+    serverId?: string;
     messages: Message[];
+};
+
+type ModelInfo = {
+    id: string;
+    label?: string;
+    ownedBy?: string;
+    object?: string;
+};
+
+type ServerConfig = {
+    id: string;
+    name: string;
+    baseUrl: string;
+    models?: ModelInfo[];
 };
 
 type ExportPayload = {
@@ -59,6 +75,41 @@ function uid() {
 
 function clamp(n: number, min: number, max: number) {
     return Math.max(min, Math.min(max, n));
+}
+
+function normalizeServerBaseUrl(value: string) {
+    return value.trim().replace(/\/+$/, "");
+}
+
+function normalizeModelList(raw: unknown): ModelInfo[] {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    const out: ModelInfo[] = [];
+
+    for (const item of raw) {
+        if (typeof item === "string") {
+            const id = item.trim();
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            out.push({ id });
+            continue;
+        }
+
+        if (item && typeof item === "object") {
+            const rec = item as { id?: unknown; label?: unknown; name?: unknown; ownedBy?: unknown; object?: unknown };
+            const id = typeof rec.id === "string" ? rec.id.trim() : "";
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            out.push({
+                id,
+                label: typeof rec.label === "string" ? rec.label : typeof rec.name === "string" ? rec.name : undefined,
+                ownedBy: typeof rec.ownedBy === "string" ? rec.ownedBy : undefined,
+                object: typeof rec.object === "string" ? rec.object : undefined,
+            });
+        }
+    }
+
+    return out;
 }
 
 function estimateTokens(text: string) {
@@ -240,6 +291,73 @@ export default function AppShell() {
 
     const listRef = useRef<HTMLDivElement | null>(null);
     const shouldAutoScrollRef = useRef(true);
+    const [models, setModels] = useState<ModelInfo[]>([]);
+    const [modelsLoading, setModelsLoading] = useState(false);
+    const [modelsError, setModelsError] = useState<string | null>(null);
+    const [servers, setServers] = useState<ServerConfig[]>([]);
+    const [serversLoading, setServersLoading] = useState(false);
+    const [serversError, setServersError] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadServers() {
+            setServersLoading(true);
+            setServersError(null);
+            setServers([]);
+
+            try {
+                const res = await fetch("/api/servers", { method: "GET", cache: "no-store" });
+                const text = await res.text();
+                let json: any = null;
+
+                try {
+                    json = text ? JSON.parse(text) : null;
+                } catch {
+                    json = null;
+                }
+
+                if (!res.ok) {
+                    const msg = (json && (json.error || json.message)) ? String(json.error || json.message) : text || `HTTP ${res.status}`;
+                    throw new Error(msg);
+                }
+
+                const data = Array.isArray(json?.servers) ? json.servers : [];
+                const seen = new Set<string>();
+                const normalized: ServerConfig[] = [];
+
+                for (const item of data) {
+                    const id = typeof item?.id === "string" ? item.id.trim() : "";
+                    const baseUrl = typeof item?.baseUrl === "string"
+                        ? normalizeServerBaseUrl(item.baseUrl)
+                        : "";
+                    if (!id || !baseUrl || seen.has(id)) continue;
+                    seen.add(id);
+                    normalized.push({
+                        id,
+                        name: typeof item?.name === "string" && item.name.trim() ? item.name.trim() : id,
+                        baseUrl,
+                        models: normalizeModelList(item?.models),
+                    });
+                }
+
+                if (!cancelled) setServers(normalized);
+            } catch (e: any) {
+                if (!cancelled) {
+                    setServers([]);
+                    setServersError(String(e?.message ?? e));
+                }
+            } finally {
+                if (!cancelled) setServersLoading(false);
+            }
+        }
+
+        void loadServers();
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     // ---- load/save localStorage ----
     useEffect(() => {
@@ -251,7 +369,10 @@ export default function AppShell() {
                 setActiveId(c.id);
                 return;
             }
-            const parsed = JSON.parse(raw) as { conversations: Conversation[]; activeId: string | null };
+            const parsed = JSON.parse(raw) as {
+                conversations: Conversation[];
+                activeId: string | null;
+            };
             if (!parsed?.conversations?.length) {
                 const c = newConversation();
                 setConversations([c]);
@@ -285,9 +406,86 @@ export default function AppShell() {
         return conversations.find((c) => c.id === activeId) ?? null;
     }, [conversations, activeId]);
 
+    useEffect(() => {
+        let cancelled = false;
+        const serverId = activeConv?.serverId ?? "";
+        const selectedServer = serverId ? servers.find((s) => s.id === serverId) ?? null : null;
+        const serverModels = selectedServer?.models ?? [];
+
+        async function loadModels() {
+            setModelsError(null);
+
+            if (serverModels.length > 0) {
+                setModels(serverModels);
+                setModelsLoading(false);
+                return;
+            }
+
+            setModelsLoading(true);
+            setModels([]);
+
+            try {
+                const params = new URLSearchParams();
+                if (serverId) params.set("server_id", serverId);
+                const url = params.toString() ? `/api/models?${params.toString()}` : "/api/models";
+
+                const res = await fetch(url, { method: "GET", cache: "no-store" });
+                const text = await res.text();
+                let json: any = null;
+
+                try {
+                    json = text ? JSON.parse(text) : null;
+                } catch {
+                    json = null;
+                }
+
+                if (!res.ok) {
+                    const msg = (json && (json.error || json.message)) ? String(json.error || json.message) : text || `HTTP ${res.status}`;
+                    throw new Error(msg);
+                }
+
+                if (!json || typeof json !== "object") {
+                    throw new Error("Invalid models response");
+                }
+
+                const data = Array.isArray(json.data) ? json.data : [];
+                const seen = new Set<string>();
+                const normalized: ModelInfo[] = [];
+
+                for (const item of data) {
+                    const id = typeof item?.id === "string" ? item.id : String(item?.id ?? "");
+                    if (!id || seen.has(id)) continue;
+                    seen.add(id);
+                    normalized.push({
+                        id,
+                        ownedBy: typeof item?.owned_by === "string" ? item.owned_by : undefined,
+                        object: typeof item?.object === "string" ? item.object : undefined,
+                    });
+                }
+
+                if (!cancelled) setModels(normalized);
+            } catch (e: any) {
+                if (!cancelled) {
+                    setModels([]);
+                    setModelsError(String(e?.message ?? e));
+                }
+            } finally {
+                if (!cancelled) setModelsLoading(false);
+            }
+        }
+
+        void loadModels();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeConv?.serverId, servers]);
+
     const updateConv = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
         setConversations((prev) => prev.map((c) => (c.id === id ? updater(c) : c)));
     }, []);
+
+    const defaultServerId = servers[0]?.id ?? "";
 
     function newConversation(): Conversation {
         const t = now();
@@ -299,6 +497,8 @@ export default function AppShell() {
             systemPrompt: "You are a helpful assistant.",
             temperature: 0.7,
             maxTokens: 512,
+            modelId: "",
+            serverId: defaultServerId,
             messages: [],
         };
     }
@@ -309,7 +509,7 @@ export default function AppShell() {
         setConversations((prev) => [c, ...prev]);
         setActiveId(c.id);
         return c;
-    }, [activeConv]);
+    }, [activeConv, defaultServerId]);
 
     // ---- auto scroll ----
     const scrollToBottom = useCallback(() => {
@@ -332,6 +532,8 @@ export default function AppShell() {
         messagesForModel: Array<{ role: Role; content: string }>;
         temperature: number;
         maxTokens: number;
+        modelId?: string;
+        serverId?: string;
     }) {
         const t0 = now();
         setIsStreaming(true);
@@ -340,16 +542,23 @@ export default function AppShell() {
         abortRef.current = ac;
 
         try {
+            const payload: any = {
+                messages: params.messagesForModel,
+                stream: true,
+                temperature: params.temperature,
+                max_tokens: params.maxTokens,
+            };
+
+            const modelId = params.modelId?.trim();
+            if (modelId) payload.model = modelId;
+            const serverId = params.serverId?.trim();
+            if (serverId) payload.server_id = serverId;
+
             const res = await fetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 signal: ac.signal,
-                body: JSON.stringify({
-                    messages: params.messagesForModel,
-                    stream: true,
-                    temperature: params.temperature,
-                    max_tokens: params.maxTokens,
-                }),
+                body: JSON.stringify(payload),
             });
 
             if (!res.ok || !res.body) {
@@ -524,6 +733,8 @@ export default function AppShell() {
             messagesForModel: latest,
             temperature: c.temperature,
             maxTokens: c.maxTokens,
+            modelId: c.modelId,
+            serverId: c.serverId,
         });
     }, [ensureActive, input, isStreaming, updateConv, buildMessagesForModel, streamChat, conversations]);
 
@@ -561,6 +772,8 @@ export default function AppShell() {
                 messagesForModel: msgsForModel,
                 temperature: conv.temperature,
                 maxTokens: conv.maxTokens,
+                modelId: conv.modelId,
+                serverId: conv.serverId,
             });
         },
         [isStreaming, conversations, updateConv, buildMessagesForModel]
@@ -697,6 +910,8 @@ export default function AppShell() {
                     systemPrompt: typeof c.systemPrompt === "string" ? c.systemPrompt : "You are a helpful assistant.",
                     temperature: typeof c.temperature === "number" ? clamp(c.temperature, 0, 2) : 0.7,
                     maxTokens: typeof c.maxTokens === "number" ? clamp(c.maxTokens, 16, 4096) : 512,
+                    modelId: typeof c.modelId === "string" ? c.modelId : "",
+                    serverId: typeof c.serverId === "string" ? c.serverId : "",
                     messages: msgs.map((m: any) => ({
                         id: typeof m.id === "string" ? m.id : uid(),
                         role: (m.role === "user" || m.role === "assistant" || m.role === "system") ? m.role : "user",
@@ -740,7 +955,7 @@ export default function AppShell() {
         setEditingMsgId(null);
         setEditingText("");
         requestAnimationFrame(scrollToBottom);
-    }, [scrollToBottom]);
+    }, [scrollToBottom, defaultServerId]);
 
     const deleteChat = useCallback((id: string) => {
         if (!confirm("このチャットを削除します。よろしいですか？")) return;
@@ -777,6 +992,11 @@ export default function AppShell() {
 
     // ---- render ----
     const conv = activeConv;
+    const selectedServerId = conv?.serverId ?? "";
+    const selectedServer = selectedServerId ? servers.find((s) => s.id === selectedServerId) ?? null : null;
+    const hasSelectedServer = selectedServerId.length > 0 && servers.some((s) => s.id === selectedServerId);
+    const selectedModelId = conv?.modelId ?? "";
+    const hasSelectedModel = selectedModelId.length > 0 && models.some((m) => m.id === selectedModelId);
 
     return (
         <div
@@ -932,6 +1152,91 @@ export default function AppShell() {
                         }}
                     >
                         <div style={{ fontSize: 12, opacity: 0.85 }}>Chat settings</div>
+
+                        <label style={{ display: "grid", gap: 6 }}>
+                            <div style={{ fontSize: 12, opacity: 0.8 }}>Server</div>
+                            <select
+                                value={selectedServerId}
+                                onChange={(e) =>
+                                    updateConv(conv.id, (c) => ({ ...c, serverId: e.target.value, updatedAt: now() }))
+                                }
+                                disabled={isStreaming || serversLoading}
+                                style={inputStyle(true)}
+                            >
+                                <option value="">Default (env)</option>
+                                {!hasSelectedServer && selectedServerId ? (
+                                    <option value={selectedServerId}>{selectedServerId} (missing)</option>
+                                ) : null}
+                                {servers.map((s) => (
+                                    <option key={s.id} value={s.id}>
+                                        {s.name || s.baseUrl}
+                                    </option>
+                                ))}
+                            </select>
+                            {selectedServer && (
+                                <div style={{ fontSize: 11, opacity: 0.65 }}>
+                                    Base: {selectedServer.baseUrl}
+                                </div>
+                            )}
+                            {serversLoading && (
+                                <div style={{ fontSize: 11, opacity: 0.65 }}>Loading servers...</div>
+                            )}
+                            {!serversLoading && serversError && (
+                                <div style={{ fontSize: 11, color: "rgba(255,180,180,0.95)" }}>
+                                    Servers unavailable
+                                </div>
+                            )}
+                        </label>
+
+                        <label style={{ display: "grid", gap: 6 }}>
+                            <div style={{ fontSize: 12, opacity: 0.8 }}>Model</div>
+                            {models.length > 0 ? (
+                                <select
+                                    value={selectedModelId}
+                                    onChange={(e) =>
+                                        updateConv(conv.id, (c) => ({ ...c, modelId: e.target.value, updatedAt: now() }))
+                                    }
+                                    disabled={isStreaming}
+                                    style={inputStyle(true)}
+                                >
+                                    <option value="">Auto (server default)</option>
+                                    {!hasSelectedModel && selectedModelId ? (
+                                        <option value={selectedModelId}>{selectedModelId} (missing)</option>
+                                    ) : null}
+                                    {models.map((m) => (
+                                        <option key={m.id} value={m.id}>
+                                            {m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id}
+                                        </option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <input
+                                    type="text"
+                                    value={selectedModelId}
+                                    onChange={(e) =>
+                                        updateConv(conv.id, (c) => ({ ...c, modelId: e.target.value, updatedAt: now() }))
+                                    }
+                                    placeholder={modelsLoading ? "Loading models..." : "Model ID (optional)"}
+                                    disabled={isStreaming || modelsLoading}
+                                    style={inputStyle(true)}
+                                />
+                            )}
+                            {modelsLoading && (
+                                <div style={{ fontSize: 11, opacity: 0.65 }}>Loading models...</div>
+                            )}
+                            {!modelsLoading && modelsError && (
+                                <div
+                                    style={{
+                                        fontSize: 11,
+                                        opacity: 0.85,
+                                        color: "rgba(255,180,180,0.95)",
+                                    }}
+                                    title={modelsError}
+                                >
+                                    Models unavailable
+                                </div>
+                            )}
+                        </label>
 
                         <label style={{ display: "grid", gap: 6 }}>
                             <div style={{ fontSize: 12, opacity: 0.8 }}>System prompt</div>
