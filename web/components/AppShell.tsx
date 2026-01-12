@@ -7,6 +7,21 @@ import Markdown from "./Markdown";
 type Role = "system" | "user" | "assistant";
 type MsgStatus = "done" | "streaming" | "stopped" | "error";
 
+type ImageAttachment = {
+    dataUrl: string;
+    name?: string;
+    mimeType?: string;
+};
+
+type ChatContentPart =
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } };
+
+type ModelMessage = {
+    role: Role;
+    content: string | ChatContentPart[];
+};
+
 type MessageMeta = {
     latencyMs?: number;
     promptTokens?: number;
@@ -20,6 +35,7 @@ type Message = {
     id: string;
     role: Role;
     content: string;
+    image?: ImageAttachment;
     createdAt: number;
     status: MsgStatus;
     meta?: MessageMeta;
@@ -44,6 +60,7 @@ type ModelInfo = {
     label?: string;
     ownedBy?: string;
     object?: string;
+    modalities?: string[];
 };
 
 type ModelOption = {
@@ -52,6 +69,7 @@ type ModelOption = {
     label?: string;
     serverId?: string;
     serverName?: string;
+    isVision?: boolean;
 };
 
 type ServerConfig = {
@@ -89,6 +107,31 @@ function normalizeServerBaseUrl(value: string) {
     return value.trim().replace(/\/+$/, "");
 }
 
+function normalizeModalities(raw: unknown): string[] | undefined {
+    if (!raw) return undefined;
+    let list: unknown = raw;
+
+    if (raw === true) {
+        return ["image", "text"];
+    }
+
+    if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (!trimmed) return undefined;
+        try {
+            list = JSON.parse(trimmed);
+        } catch {
+            list = trimmed.split(",").map((part) => part.trim());
+        }
+    }
+
+    if (!Array.isArray(list)) return undefined;
+    const out = list
+        .map((item) => (typeof item === "string" ? item.trim().toLowerCase() : ""))
+        .filter(Boolean);
+    return out.length ? out : undefined;
+}
+
 function normalizeModelList(raw: unknown): ModelInfo[] {
     if (!Array.isArray(raw)) return [];
     const seen = new Set<string>();
@@ -104,20 +147,54 @@ function normalizeModelList(raw: unknown): ModelInfo[] {
         }
 
         if (item && typeof item === "object") {
-            const rec = item as { id?: unknown; label?: unknown; name?: unknown; ownedBy?: unknown; object?: unknown };
+            const rec = item as {
+                id?: unknown;
+                label?: unknown;
+                name?: unknown;
+                ownedBy?: unknown;
+                object?: unknown;
+                modalities?: unknown;
+                modality?: unknown;
+                input?: unknown;
+                inputType?: unknown;
+                vision?: unknown;
+            };
             const id = typeof rec.id === "string" ? rec.id.trim() : "";
             if (!id || seen.has(id)) continue;
             seen.add(id);
+            const modalities = normalizeModalities(
+                rec.modalities ?? rec.modality ?? rec.input ?? rec.inputType ?? (rec.vision ? true : undefined)
+            );
             out.push({
                 id,
                 label: typeof rec.label === "string" ? rec.label : typeof rec.name === "string" ? rec.name : undefined,
                 ownedBy: typeof rec.ownedBy === "string" ? rec.ownedBy : undefined,
                 object: typeof rec.object === "string" ? rec.object : undefined,
+                modalities,
             });
         }
     }
 
     return out;
+}
+
+function isVisionModelId(id: string, modalities?: string[]): boolean {
+    if (!id) return false;
+    if (modalities && modalities.length > 0) {
+        const norm = modalities.map((m) => m.toLowerCase());
+        if (norm.some((m) => m.includes("image") || m.includes("vision") || m.includes("multimodal"))) return true;
+    }
+    const lower = id.toLowerCase();
+    if (/(^|[-_/])vl([-.]|$)/.test(lower)) return true;
+    if (lower.includes("vision") || lower.includes("multimodal") || lower.includes("image")) return true;
+    return false;
+}
+
+function requiresImageToken(modelId: string): boolean {
+    if (!modelId) return false;
+    const lower = modelId.toLowerCase();
+    if (lower.includes("lfm2.5-vl")) return true;
+    return lower.includes("lfm2") && lower.includes("vl");
 }
 
 function estimateTokens(text: string) {
@@ -262,6 +339,30 @@ function IconSettings(props: { size?: number }) {
     );
 }
 
+function IconPlus(props: { size?: number }) {
+    const s = props.size ?? 16;
+    return (
+        <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden="true">
+            <path
+                fill="currentColor"
+                d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"
+            />
+        </svg>
+    );
+}
+
+function IconClose(props: { size?: number }) {
+    const s = props.size ?? 12;
+    return (
+        <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden="true">
+            <path
+                fill="currentColor"
+                d="M18.3 5.71L12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29 10.59 10.6 16.88 4.29z"
+            />
+        </svg>
+    );
+}
+
 // ---------- UI small button ----------
 function IconButton(props: {
     title: string;
@@ -301,6 +402,8 @@ export default function AppShell() {
     const [input, setInput] = useState("");
     const [isStreaming, setIsStreaming] = useState(false);
     const abortRef = useRef<AbortController | null>(null);
+    const [pendingImage, setPendingImage] = useState<ImageAttachment | null>(null);
+    const imageInputRef = useRef<HTMLInputElement | null>(null);
 
     const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
     const [editingText, setEditingText] = useState("");
@@ -335,12 +438,14 @@ export default function AppShell() {
                 const key = `${server.id}::${id}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
+                const isVision = isVisionModelId(id, model.modalities);
                 out.push({
                     key,
                     id,
                     label: model.label,
                     serverId: server.id,
                     serverName: server.name,
+                    isVision,
                 });
             }
         }
@@ -575,6 +680,18 @@ export default function AppShell() {
         }));
     }, [activeConv, configuredModelOptions, defaultServerId, updateConv]);
 
+    const resolveVisionSupport = useCallback((modelId: string, serverId?: string) => {
+        const trimmed = modelId.trim();
+        if (!trimmed) return false;
+        const exact = configuredModelOptions.find(
+            (item) => item.id === trimmed && (!serverId || item.serverId === serverId)
+        );
+        if (exact) return Boolean(exact.isVision);
+        const any = configuredModelOptions.find((item) => item.id === trimmed);
+        if (any) return Boolean(any.isVision);
+        return isVisionModelId(trimmed);
+    }, [configuredModelOptions]);
+
     function newConversation(): Conversation {
         const t = now();
         return {
@@ -629,7 +746,7 @@ export default function AppShell() {
     async function streamChat(params: {
         convId: string;
         assistantId: string;
-        messagesForModel: Array<{ role: Role; content: string }>;
+        messagesForModel: ModelMessage[];
         temperature: number;
         maxTokens: number;
         modelId?: string;
@@ -769,17 +886,28 @@ export default function AppShell() {
     }, []);
 
     // ---- message helpers ----
-    const buildMessagesForModel = useCallback((c: Conversation, uptoMsgId?: string) => {
-        const msgs: Array<{ role: Role; content: string }> = [];
+    const buildMessagesForModel = useCallback((c: Conversation, supportsVision: boolean, uptoMsgId?: string) => {
+        const msgs: ModelMessage[] = [];
+        const needsImageToken = requiresImageToken(c.modelId ?? "");
         if (c.systemPrompt.trim().length > 0) {
             msgs.push({ role: "system", content: c.systemPrompt });
         }
         for (const m of c.messages) {
-            if (uptoMsgId && m.id === uptoMsgId) {
-                // uptoMsgId は「含める」側で扱う（呼び出し側で調整）
-            }
             if (m.role === "system") continue;
-            msgs.push({ role: m.role, content: m.content });
+            let content: string | ChatContentPart[] = m.content;
+            if (supportsVision && m.role === "user" && m.image?.dataUrl) {
+                const parts: ChatContentPart[] = [];
+                let text = m.content;
+                if (needsImageToken && !text.includes("<image>")) {
+                    text = text.trim().length > 0 ? `<image>\n${text}` : "<image>";
+                }
+                if (text.trim().length > 0) {
+                    parts.push({ type: "text", text });
+                }
+                parts.push({ type: "image_url", image_url: { url: m.image.dataUrl } });
+                content = parts;
+            }
+            msgs.push({ role: m.role, content });
             if (uptoMsgId && m.id === uptoMsgId) break;
         }
         return msgs;
@@ -790,14 +918,18 @@ export default function AppShell() {
         if (isStreaming) return;
 
         const text = input.trimEnd();
-        if (text.trim().length === 0) return;
+        const hasText = text.trim().length > 0;
+        const hasImage = Boolean(pendingImage);
+        if (!hasText && !hasImage) return;
 
         setInput("");
+        setPendingImage(null);
 
         const userMsg: Message = {
             id: uid(),
             role: "user",
-            content: text,
+            content: hasText ? text : "",
+            image: hasImage ? pendingImage ?? undefined : undefined,
             createdAt: now(),
             status: "done",
         };
@@ -820,11 +952,13 @@ export default function AppShell() {
         });
 
         // モデルに渡す messages は「今追加した user まで」を含める
+        const supportsVision = resolveVisionSupport(c.modelId ?? "", c.serverId);
+
         const latest = (() => {
             const conv = conversations.find((x) => x.id === c.id) ?? c;
             // state 反映前でも OK なように手元で組む
             const tempConv = { ...conv, messages: [...conv.messages, userMsg] };
-            return buildMessagesForModel(tempConv);
+            return buildMessagesForModel(tempConv, supportsVision);
         })();
 
         await streamChat({
@@ -836,7 +970,7 @@ export default function AppShell() {
             modelId: c.modelId,
             serverId: c.serverId,
         });
-    }, [ensureActive, input, isStreaming, updateConv, buildMessagesForModel, streamChat, conversations]);
+    }, [ensureActive, input, pendingImage, isStreaming, updateConv, buildMessagesForModel, streamChat, conversations, resolveVisionSupport]);
 
     // ---- resend / regenerate without duplicating user message ----
     const runFromUserMessage = useCallback(
@@ -864,7 +998,8 @@ export default function AppShell() {
             });
 
             // model messages: system + 先頭から userMsgId まで
-            const msgsForModel = buildMessagesForModel(conv, userMsgId);
+            const supportsVision = resolveVisionSupport(conv.modelId ?? "", conv.serverId);
+            const msgsForModel = buildMessagesForModel(conv, supportsVision, userMsgId);
 
             await streamChat({
                 convId,
@@ -876,7 +1011,7 @@ export default function AppShell() {
                 serverId: conv.serverId,
             });
         },
-        [isStreaming, conversations, updateConv, buildMessagesForModel]
+        [isStreaming, conversations, updateConv, buildMessagesForModel, resolveVisionSupport]
     );
 
     const regenerateFromAssistant = useCallback(
@@ -938,6 +1073,28 @@ export default function AppShell() {
 
         await runFromUserMessage(convId, editingMsgId);
     }, [activeConv, editingMsgId, editingText, isStreaming, conversations, updateConv, runFromUserMessage]);
+
+    const onPickImage = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (!file.type.startsWith("image/")) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = typeof reader.result === "string" ? reader.result : "";
+            if (!result) return;
+            setPendingImage({
+                dataUrl: result,
+                name: file.name,
+                mimeType: file.type || undefined,
+            });
+        };
+        reader.readAsDataURL(file);
+        e.target.value = "";
+    }, []);
+
+    const clearPendingImage = useCallback(() => {
+        setPendingImage(null);
+    }, []);
 
     // ---- export/import ----
     const exportCurrent = useCallback(() => {
@@ -1016,6 +1173,13 @@ export default function AppShell() {
                         id: typeof m.id === "string" ? m.id : uid(),
                         role: (m.role === "user" || m.role === "assistant" || m.role === "system") ? m.role : "user",
                         content: typeof m.content === "string" ? m.content : "",
+                        image: m.image && typeof m.image.dataUrl === "string"
+                            ? {
+                                dataUrl: m.image.dataUrl,
+                                name: typeof m.image.name === "string" ? m.image.name : undefined,
+                                mimeType: typeof m.image.mimeType === "string" ? m.image.mimeType : undefined,
+                            }
+                            : undefined,
                         createdAt: typeof m.createdAt === "number" ? m.createdAt : now(),
                         status: (m.status === "done" || m.status === "streaming" || m.status === "stopped" || m.status === "error")
                             ? m.status
@@ -1045,6 +1209,7 @@ export default function AppShell() {
         abortRef.current?.abort();
         abortRef.current = null;
         setInput("");
+        setPendingImage(null);
     }, []);
 
     const createNewChat = useCallback(() => {
@@ -1054,6 +1219,7 @@ export default function AppShell() {
         setMenuOpen(false);
         setEditingMsgId(null);
         setEditingText("");
+        setPendingImage(null);
         requestAnimationFrame(scrollToBottom);
     }, [scrollToBottom, defaultServerId]);
 
@@ -1114,6 +1280,7 @@ export default function AppShell() {
             label: model.label,
             serverId: selectedServerId || undefined,
             serverName: selectedServerId ? (servers.find((s) => s.id === selectedServerId)?.name ?? selectedServerId) : undefined,
+            isVision: isVisionModelId(model.id, model.modalities),
         }));
 
     const selectedModelKey = (() => {
@@ -1129,7 +1296,11 @@ export default function AppShell() {
         return selectedModelId;
     })();
 
+    const selectedModelOption = modelOptions.find((m) => m.key === selectedModelKey) ?? null;
     const hasSelectedModel = selectedModelKey.length > 0 && modelOptions.some((m) => m.key === selectedModelKey);
+    const supportsVision = Boolean(
+        (selectedModelOption && selectedModelOption.isVision) || isVisionModelId(selectedModelId)
+    );
 
     const modelStatus = (() => {
         if (serversLoading) return "Loading servers...";
@@ -1142,6 +1313,12 @@ export default function AppShell() {
     })();
     const modelSelectDisabled = !conv || isStreaming || serversLoading || (!configuredModelOptions.length && modelsLoading);
     const modelInputPlaceholder = (serversLoading || modelsLoading) ? "Loading models..." : "Model ID (optional)";
+
+    useEffect(() => {
+        if (!supportsVision && pendingImage) {
+            setPendingImage(null);
+        }
+    }, [supportsVision, pendingImage]);
 
     return (
         <div
@@ -1425,32 +1602,106 @@ export default function AppShell() {
                         zIndex: 5,
                     }}
                 >
+                    {pendingImage && (
+                        <div style={{ maxWidth: 980, margin: "0 auto 8px", display: "flex" }}>
+                            <div style={{ position: "relative", width: 160 }}>
+                                <img
+                                    src={pendingImage.dataUrl}
+                                    alt={pendingImage.name || "attachment"}
+                                    style={{
+                                        width: "100%",
+                                        borderRadius: 12,
+                                        display: "block",
+                                        border: "1px solid rgba(255,255,255,0.12)",
+                                    }}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={clearPendingImage}
+                                    title="Remove image"
+                                    aria-label="Remove image"
+                                    style={{
+                                        position: "absolute",
+                                        top: 6,
+                                        right: 6,
+                                        width: 22,
+                                        height: 22,
+                                        borderRadius: 999,
+                                        border: "1px solid rgba(255,255,255,0.25)",
+                                        background: "rgba(0,0,0,0.6)",
+                                        color: "rgba(255,255,255,0.95)",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    <IconClose />
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {supportsVision && (
+                        <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*"
+                            onChange={onPickImage}
+                            style={{ display: "none" }}
+                        />
+                    )}
+
                     <div style={{ maxWidth: 980, margin: "0 auto", display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Message"
-                rows={2}
-                disabled={isStreaming}
-                onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        appendUserAndRun();
-                    }
-                }}
-                style={{
-                    flex: 1,
-                    resize: "none",
-                    borderRadius: 14,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(255,255,255,0.05)",
-                    padding: "12px 12px",
-                    color: "rgba(255,255,255,0.92)",
-                    outline: "none",
-                    lineHeight: 1.45,
-                    minHeight: 44,
-                }}
-            />
+                        {supportsVision && (
+                            <button
+                                type="button"
+                                onClick={() => imageInputRef.current?.click()}
+                                disabled={isStreaming}
+                                title="Attach image"
+                                aria-label="Attach image"
+                                style={{
+                                    width: 42,
+                                    height: 42,
+                                    borderRadius: 12,
+                                    border: "1px solid rgba(255,255,255,0.14)",
+                                    background: "rgba(255,255,255,0.06)",
+                                    cursor: isStreaming ? "not-allowed" : "pointer",
+                                    color: "rgba(255,255,255,0.92)",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    flex: "0 0 auto",
+                                }}
+                            >
+                                <IconPlus />
+                            </button>
+                        )}
+                        <textarea
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            placeholder="Message"
+                            rows={2}
+                            disabled={isStreaming}
+                            onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    appendUserAndRun();
+                                }
+                            }}
+                            style={{
+                                flex: 1,
+                                resize: "none",
+                                borderRadius: 14,
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                background: "rgba(255,255,255,0.05)",
+                                padding: "12px 12px",
+                                color: "rgba(255,255,255,0.92)",
+                                outline: "none",
+                                lineHeight: 1.45,
+                                minHeight: 44,
+                            }}
+                        />
 
                         {isStreaming ? (
                             <button
@@ -1650,10 +1901,11 @@ function MessageRow(props: {
     const m = props.m;
     const isUser = m.role === "user";
     const isAssistant = m.role === "assistant";
+    const hasImage = Boolean(m.image?.dataUrl);
 
     const bubbleBg = isUser ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
     const bubbleBorder = isUser ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.10)";
-    const showActions = !props.isStreaming && m.status !== "streaming" && !(isUser && props.isEditing);
+    const showActions = m.status !== "streaming" && !(isUser && props.isEditing);
 
     const bubbleStyle: React.CSSProperties = {
         borderRadius: 16,
@@ -1689,23 +1941,38 @@ function MessageRow(props: {
             >
                 <div style={{ maxWidth: "82%", width: "fit-content" }}>
                     <div style={bubbleStyle}>
+                        {hasImage && (
+                            <div style={{ marginBottom: (isUser && props.isEditing) || m.content.trim().length > 0 ? 10 : 0 }}>
+                                <img
+                                    src={m.image?.dataUrl}
+                                    alt={m.image?.name || "attachment"}
+                                    style={{
+                                        maxWidth: "100%",
+                                        borderRadius: 12,
+                                        display: "block",
+                                        border: "1px solid rgba(255,255,255,0.12)",
+                                    }}
+                                />
+                            </div>
+                        )}
+
                         {isUser && props.isEditing ? (
                             <div style={{ display: "grid", gap: 10 }}>
-                <textarea
-                    value={props.editingText}
-                    onChange={(e) => props.onEditingTextChange(e.target.value)}
-                    rows={4}
-                    style={{
-                        width: "100%",
-                        borderRadius: 12,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(255,255,255,0.05)",
-                        padding: 10,
-                        color: "rgba(255,255,255,0.92)",
-                        outline: "none",
-                        lineHeight: 1.45,
-                    }}
-                />
+                                <textarea
+                                    value={props.editingText}
+                                    onChange={(e) => props.onEditingTextChange(e.target.value)}
+                                    rows={4}
+                                    style={{
+                                        width: "100%",
+                                        borderRadius: 12,
+                                        border: "1px solid rgba(255,255,255,0.12)",
+                                        background: "rgba(255,255,255,0.05)",
+                                        padding: 10,
+                                        color: "rgba(255,255,255,0.92)",
+                                        outline: "none",
+                                        lineHeight: 1.45,
+                                    }}
+                                />
                                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                                     <button
                                         type="button"

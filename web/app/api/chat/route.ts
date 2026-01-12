@@ -5,7 +5,10 @@ import { getServerById } from "../../../lib/vllmServers";
 export const runtime = "nodejs";
 
 type ChatRequest = {
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+    messages: Array<{
+        role: "system" | "user" | "assistant";
+        content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
+    }>;
     stream?: boolean;
     temperature?: number;
     max_tokens?: number;
