@@ -52,6 +52,7 @@ export type MarkdownViewProps = {
     text?: string;
     /** <Markdown>...</Markdown> で渡した場合 */
     children?: React.ReactNode;
+    showCodeCopy?: boolean;
 };
 
 export default function Markdown(props: MarkdownViewProps) {
@@ -63,6 +64,7 @@ export default function Markdown(props: MarkdownViewProps) {
                 : props.children == null
                     ? ""
                     : String(props.children);
+    const showCodeCopy = props.showCodeCopy !== false;
 
     return (
         <div className="md">
@@ -125,25 +127,27 @@ export default function Markdown(props: MarkdownViewProps) {
                                     }}
                                 >
                                     <span className="codeLang" style={{ fontWeight: 700 }}>{lang}</span>
-                                    <button
-                                        type="button"
-                                        className="codeCopy"
-                                        onClick={() => copyPlain(raw)}
-                                        title="Copy code"
-                                        aria-label="Copy code block"
-                                        style={{
-                                            border: "1px solid rgba(255,255,255,0.16)",
-                                            background: "rgba(255,255,255,0.06)",
-                                            color: "rgba(230,232,239,0.95)",
-                                            borderRadius: 10,
-                                            padding: "4px 10px",
-                                            fontSize: 12,
-                                            cursor: "pointer",
-                                            lineHeight: 1.2,
-                                        }}
-                                    >
-                                        Copy
-                                    </button>
+                                    {showCodeCopy && (
+                                        <button
+                                            type="button"
+                                            className="codeCopy"
+                                            onClick={() => copyPlain(raw)}
+                                            title="Copy code"
+                                            aria-label="Copy code block"
+                                            style={{
+                                                border: "1px solid rgba(255,255,255,0.16)",
+                                                background: "rgba(255,255,255,0.06)",
+                                                color: "rgba(230,232,239,0.95)",
+                                                borderRadius: 10,
+                                                padding: "4px 10px",
+                                                fontSize: 12,
+                                                cursor: "pointer",
+                                                lineHeight: 1.2,
+                                            }}
+                                        >
+                                            Copy
+                                        </button>
+                                    )}
                                 </div>
                                 <pre
                                     className={["codePre", className].filter(Boolean).join(" ")}

@@ -46,6 +46,14 @@ type ModelInfo = {
     object?: string;
 };
 
+type ModelOption = {
+    key: string;
+    id: string;
+    label?: string;
+    serverId?: string;
+    serverName?: string;
+};
+
 type ServerConfig = {
     id: string;
     name: string;
@@ -242,6 +250,18 @@ function IconTrash(props: { size?: number }) {
     );
 }
 
+function IconSettings(props: { size?: number }) {
+    const s = props.size ?? 16;
+    return (
+        <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden="true">
+            <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.2 7.2 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.3-.06.61-.06.94s.02.64.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.38 1.05.7 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54c.58-.24 1.13-.56 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"
+            />
+        </svg>
+    );
+}
+
 // ---------- UI small button ----------
 function IconButton(props: {
     title: string;
@@ -286,6 +306,7 @@ export default function AppShell() {
     const [editingText, setEditingText] = useState("");
 
     const [menuOpen, setMenuOpen] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
     const menuBtnRef = useRef<HTMLButtonElement | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -297,6 +318,34 @@ export default function AppShell() {
     const [servers, setServers] = useState<ServerConfig[]>([]);
     const [serversLoading, setServersLoading] = useState(false);
     const [serversError, setServersError] = useState<string | null>(null);
+
+    const hasConfiguredModels = useMemo(
+        () => servers.some((server) => (server.models ?? []).length > 0),
+        [servers]
+    );
+
+    const configuredModelOptions = useMemo(() => {
+        const out: ModelOption[] = [];
+        const seen = new Set<string>();
+        for (const server of servers) {
+            const modelsList = server.models ?? [];
+            for (const model of modelsList) {
+                const id = model.id?.trim();
+                if (!id) continue;
+                const key = `${server.id}::${id}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push({
+                    key,
+                    id,
+                    label: model.label,
+                    serverId: server.id,
+                    serverName: server.name,
+                });
+            }
+        }
+        return out;
+    }, [servers]);
 
     useEffect(() => {
         let cancelled = false;
@@ -408,6 +457,14 @@ export default function AppShell() {
 
     useEffect(() => {
         let cancelled = false;
+        if (hasConfiguredModels) {
+            setModels([]);
+            setModelsLoading(false);
+            setModelsError(null);
+            return () => {
+                cancelled = true;
+            };
+        }
         const serverId = activeConv?.serverId ?? "";
         const selectedServer = serverId ? servers.find((s) => s.id === serverId) ?? null : null;
         const serverModels = selectedServer?.models ?? [];
@@ -479,13 +536,44 @@ export default function AppShell() {
         return () => {
             cancelled = true;
         };
-    }, [activeConv?.serverId, servers]);
+    }, [activeConv?.serverId, servers, hasConfiguredModels]);
 
     const updateConv = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
         setConversations((prev) => prev.map((c) => (c.id === id ? updater(c) : c)));
     }, []);
 
     const defaultServerId = servers[0]?.id ?? "";
+
+    const applyModelSelection = useCallback((value: string) => {
+        if (!activeConv) return;
+        const trimmed = value.trim();
+        if (!trimmed) {
+            updateConv(activeConv.id, (c) => ({
+                ...c,
+                modelId: "",
+                serverId: c.serverId || defaultServerId,
+                updatedAt: now(),
+            }));
+            return;
+        }
+        if (configuredModelOptions.length > 0) {
+            const opt = configuredModelOptions.find((item) => item.key === trimmed);
+            if (opt) {
+                updateConv(activeConv.id, (c) => ({
+                    ...c,
+                    modelId: opt.id,
+                    serverId: opt.serverId ?? c.serverId ?? defaultServerId,
+                    updatedAt: now(),
+                }));
+                return;
+            }
+        }
+        updateConv(activeConv.id, (c) => ({
+            ...c,
+            modelId: trimmed,
+            updatedAt: now(),
+        }));
+    }, [activeConv, configuredModelOptions, defaultServerId, updateConv]);
 
     function newConversation(): Conversation {
         const t = now();
@@ -510,6 +598,18 @@ export default function AppShell() {
         setActiveId(c.id);
         return c;
     }, [activeConv, defaultServerId]);
+
+    useEffect(() => {
+        if (!activeConv) return;
+        if (!activeConv.modelId || activeConv.serverId) return;
+        const opt = configuredModelOptions.find((item) => item.id === activeConv.modelId);
+        if (!opt?.serverId) return;
+        updateConv(activeConv.id, (c) => ({
+            ...c,
+            serverId: opt.serverId,
+            updatedAt: now(),
+        }));
+    }, [activeConv, configuredModelOptions, updateConv]);
 
     // ---- auto scroll ----
     const scrollToBottom = useCallback(() => {
@@ -990,13 +1090,58 @@ export default function AppShell() {
         };
     }, [menuOpen]);
 
+    useEffect(() => {
+        if (!settingsOpen) return;
+        function onKey(e: KeyboardEvent) {
+            if (e.key === "Escape") setSettingsOpen(false);
+        }
+        window.addEventListener("keydown", onKey);
+        return () => {
+            window.removeEventListener("keydown", onKey);
+        };
+    }, [settingsOpen]);
+
     // ---- render ----
     const conv = activeConv;
     const selectedServerId = conv?.serverId ?? "";
-    const selectedServer = selectedServerId ? servers.find((s) => s.id === selectedServerId) ?? null : null;
-    const hasSelectedServer = selectedServerId.length > 0 && servers.some((s) => s.id === selectedServerId);
     const selectedModelId = conv?.modelId ?? "";
-    const hasSelectedModel = selectedModelId.length > 0 && models.some((m) => m.id === selectedModelId);
+
+    const modelOptions: ModelOption[] = configuredModelOptions.length > 0
+        ? configuredModelOptions
+        : models.map((model) => ({
+            key: model.id,
+            id: model.id,
+            label: model.label,
+            serverId: selectedServerId || undefined,
+            serverName: selectedServerId ? (servers.find((s) => s.id === selectedServerId)?.name ?? selectedServerId) : undefined,
+        }));
+
+    const selectedModelKey = (() => {
+        if (!selectedModelId) return "";
+        if (configuredModelOptions.length > 0) {
+            const exact = configuredModelOptions.find(
+                (opt) => opt.id === selectedModelId && opt.serverId === selectedServerId
+            );
+            if (exact) return exact.key;
+            const byModel = configuredModelOptions.find((opt) => opt.id === selectedModelId);
+            return byModel ? byModel.key : selectedModelId;
+        }
+        return selectedModelId;
+    })();
+
+    const hasSelectedModel = selectedModelKey.length > 0 && modelOptions.some((m) => m.key === selectedModelKey);
+
+    const modelStatus = (() => {
+        if (serversLoading) return "Loading servers...";
+        if (serversError) return "Servers unavailable";
+        if (!configuredModelOptions.length) {
+            if (modelsLoading) return "Loading models...";
+            if (modelsError) return "Models unavailable";
+        }
+        return "";
+    })();
+    const modelSelectDisabled = !conv || isStreaming || serversLoading || (!configuredModelOptions.length && modelsLoading);
+    const modelInputPlaceholder = (serversLoading || modelsLoading) ? "Loading models..." : "Model ID (optional)";
 
     return (
         <div
@@ -1141,151 +1286,6 @@ export default function AppShell() {
                     })}
                 </div>
 
-                {/* Sidebar settings for active conversation */}
-                {conv && (
-                    <div
-                        style={{
-                            borderTop: "1px solid rgba(255,255,255,0.08)",
-                            padding: 12,
-                            display: "grid",
-                            gap: 10,
-                        }}
-                    >
-                        <div style={{ fontSize: 12, opacity: 0.85 }}>Chat settings</div>
-
-                        <label style={{ display: "grid", gap: 6 }}>
-                            <div style={{ fontSize: 12, opacity: 0.8 }}>Server</div>
-                            <select
-                                value={selectedServerId}
-                                onChange={(e) =>
-                                    updateConv(conv.id, (c) => ({ ...c, serverId: e.target.value, updatedAt: now() }))
-                                }
-                                disabled={isStreaming || serversLoading}
-                                style={inputStyle(true)}
-                            >
-                                <option value="">Default (env)</option>
-                                {!hasSelectedServer && selectedServerId ? (
-                                    <option value={selectedServerId}>{selectedServerId} (missing)</option>
-                                ) : null}
-                                {servers.map((s) => (
-                                    <option key={s.id} value={s.id}>
-                                        {s.name || s.baseUrl}
-                                    </option>
-                                ))}
-                            </select>
-                            {selectedServer && (
-                                <div style={{ fontSize: 11, opacity: 0.65 }}>
-                                    Base: {selectedServer.baseUrl}
-                                </div>
-                            )}
-                            {serversLoading && (
-                                <div style={{ fontSize: 11, opacity: 0.65 }}>Loading servers...</div>
-                            )}
-                            {!serversLoading && serversError && (
-                                <div style={{ fontSize: 11, color: "rgba(255,180,180,0.95)" }}>
-                                    Servers unavailable
-                                </div>
-                            )}
-                        </label>
-
-                        <label style={{ display: "grid", gap: 6 }}>
-                            <div style={{ fontSize: 12, opacity: 0.8 }}>Model</div>
-                            {models.length > 0 ? (
-                                <select
-                                    value={selectedModelId}
-                                    onChange={(e) =>
-                                        updateConv(conv.id, (c) => ({ ...c, modelId: e.target.value, updatedAt: now() }))
-                                    }
-                                    disabled={isStreaming}
-                                    style={inputStyle(true)}
-                                >
-                                    <option value="">Auto (server default)</option>
-                                    {!hasSelectedModel && selectedModelId ? (
-                                        <option value={selectedModelId}>{selectedModelId} (missing)</option>
-                                    ) : null}
-                                    {models.map((m) => (
-                                        <option key={m.id} value={m.id}>
-                                            {m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id}
-                                        </option>
-                                    ))}
-                                </select>
-                            ) : (
-                                <input
-                                    type="text"
-                                    value={selectedModelId}
-                                    onChange={(e) =>
-                                        updateConv(conv.id, (c) => ({ ...c, modelId: e.target.value, updatedAt: now() }))
-                                    }
-                                    placeholder={modelsLoading ? "Loading models..." : "Model ID (optional)"}
-                                    disabled={isStreaming || modelsLoading}
-                                    style={inputStyle(true)}
-                                />
-                            )}
-                            {modelsLoading && (
-                                <div style={{ fontSize: 11, opacity: 0.65 }}>Loading models...</div>
-                            )}
-                            {!modelsLoading && modelsError && (
-                                <div
-                                    style={{
-                                        fontSize: 11,
-                                        opacity: 0.85,
-                                        color: "rgba(255,180,180,0.95)",
-                                    }}
-                                    title={modelsError}
-                                >
-                                    Models unavailable
-                                </div>
-                            )}
-                        </label>
-
-                        <label style={{ display: "grid", gap: 6 }}>
-                            <div style={{ fontSize: 12, opacity: 0.8 }}>System prompt</div>
-                            <textarea
-                                value={conv.systemPrompt}
-                                onChange={(e) =>
-                                    updateConv(conv.id, (c) => ({ ...c, systemPrompt: e.target.value, updatedAt: now() }))
-                                }
-                                disabled={isStreaming}
-                                rows={3}
-                                style={inputStyle()}
-                            />
-                        </label>
-
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                            <label style={{ display: "grid", gap: 6 }}>
-                                <div style={{ fontSize: 12, opacity: 0.8 }}>Temperature</div>
-                                <input
-                                    type="number"
-                                    step="0.1"
-                                    min="0"
-                                    max="2"
-                                    value={conv.temperature}
-                                    onChange={(e) =>
-                                        updateConv(conv.id, (c) => ({ ...c, temperature: clamp(Number(e.target.value), 0, 2), updatedAt: now() }))
-                                    }
-                                    disabled={isStreaming}
-                                    style={inputStyle(true)}
-                                />
-                            </label>
-
-                            <label style={{ display: "grid", gap: 6 }}>
-                                <div style={{ fontSize: 12, opacity: 0.8 }}>Max tokens</div>
-                                <input
-                                    type="number"
-                                    step="16"
-                                    min="16"
-                                    max="4096"
-                                    value={conv.maxTokens}
-                                    onChange={(e) =>
-                                        updateConv(conv.id, (c) => ({ ...c, maxTokens: clamp(Number(e.target.value), 16, 4096), updatedAt: now() }))
-                                    }
-                                    disabled={isStreaming}
-                                    style={inputStyle(true)}
-                                />
-                            </label>
-                        </div>
-                    </div>
-                )}
             </aside>
 
             {/* Main */}
@@ -1303,11 +1303,74 @@ export default function AppShell() {
                         backdropFilter: "blur(10px)",
                     }}
                 >
-                    <div style={{ fontWeight: 700, fontSize: 14, opacity: 0.95 }}>
-                        {conv?.title ?? "Chat"}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>Model</div>
+                        <div style={{ minWidth: 220, maxWidth: 360, flex: "0 1 320px" }}>
+                            {modelOptions.length > 0 ? (
+                                <select
+                                    value={selectedModelKey}
+                                    onChange={(e) => applyModelSelection(e.target.value)}
+                                    disabled={modelSelectDisabled}
+                                    style={{
+                                        ...inputStyle(true),
+                                        width: "100%",
+                                        height: 34,
+                                        padding: "6px 10px",
+                                        fontSize: 12,
+                                    }}
+                                >
+                                    <option value="">Auto (server default)</option>
+                                    {!hasSelectedModel && selectedModelKey ? (
+                                        <option value={selectedModelKey}>{selectedModelId} (missing)</option>
+                                    ) : null}
+                                    {modelOptions.map((m) => {
+                                        const baseLabel = m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id;
+                                        const serverLabel = m.serverName ?? m.serverId;
+                                        const fullLabel = serverLabel ? `${baseLabel} - ${serverLabel}` : baseLabel;
+                                        return (
+                                            <option key={m.key} value={m.key}>
+                                                {fullLabel}
+                                            </option>
+                                        );
+                                    })}
+                                </select>
+                            ) : (
+                                <input
+                                    type="text"
+                                    value={selectedModelId}
+                                    onChange={(e) => {
+                                        if (!conv) return;
+                                        updateConv(conv.id, (c) => ({ ...c, modelId: e.target.value, updatedAt: now() }));
+                                    }}
+                                    placeholder={modelInputPlaceholder}
+                                    disabled={modelSelectDisabled}
+                                    style={{
+                                        ...inputStyle(true),
+                                        width: "100%",
+                                        height: 34,
+                                        padding: "6px 10px",
+                                        fontSize: 12,
+                                    }}
+                                />
+                            )}
+                        </div>
+                        <IconButton
+                            title="Settings"
+                            onClick={() => setSettingsOpen(true)}
+                            disabled={!conv}
+                        >
+                            <IconSettings />
+                        </IconButton>
                     </div>
-                    <div style={{ fontSize: 12, opacity: 0.8 }}>
-                        {isStreaming ? "Streaming…" : "Ready"}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        {modelStatus && (
+                            <div style={{ fontSize: 11, opacity: 0.65 }}>
+                                {modelStatus}
+                            </div>
+                        )}
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>
+                            {isStreaming ? "Streaming…" : "Ready"}
+                        </div>
                     </div>
                 </header>
 
@@ -1415,6 +1478,104 @@ export default function AppShell() {
                     </div>
                 </div>
             </main>
+
+            {settingsOpen && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    onMouseDown={(e) => {
+                        if (e.target === e.currentTarget) setSettingsOpen(false);
+                    }}
+                    style={{
+                        position: "fixed",
+                        inset: 0,
+                        background: "rgba(6,8,12,0.65)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        zIndex: 60,
+                        padding: 16,
+                    }}
+                >
+                    <div
+                        style={{
+                            width: 560,
+                            maxWidth: "100%",
+                            borderRadius: 16,
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            background: "rgba(13,17,24,0.98)",
+                            boxShadow: "0 30px 80px rgba(0,0,0,0.6)",
+                            padding: 16,
+                            display: "grid",
+                            gap: 12,
+                        }}
+                    >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                            <div style={{ fontWeight: 700, fontSize: 14 }}>Chat settings</div>
+                            <button
+                                type="button"
+                                onClick={() => setSettingsOpen(false)}
+                                style={smallBtnStyle(false)}
+                            >
+                                Close
+                            </button>
+                        </div>
+
+                        {conv ? (
+                            <div style={{ display: "grid", gap: 12 }}>
+                                <label style={{ display: "grid", gap: 6 }}>
+                                    <div style={{ fontSize: 12, opacity: 0.8 }}>System prompt</div>
+                                    <textarea
+                                        value={conv.systemPrompt}
+                                        onChange={(e) =>
+                                            updateConv(conv.id, (c) => ({ ...c, systemPrompt: e.target.value, updatedAt: now() }))
+                                        }
+                                        disabled={isStreaming}
+                                        rows={4}
+                                        style={inputStyle()}
+                                    />
+                                </label>
+
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                                    <label style={{ display: "grid", gap: 6 }}>
+                                        <div style={{ fontSize: 12, opacity: 0.8 }}>Temperature</div>
+                                        <input
+                                            type="number"
+                                            step="0.1"
+                                            min="0"
+                                            max="2"
+                                            value={conv.temperature}
+                                            onChange={(e) =>
+                                                updateConv(conv.id, (c) => ({ ...c, temperature: clamp(Number(e.target.value), 0, 2), updatedAt: now() }))
+                                            }
+                                            disabled={isStreaming}
+                                            style={inputStyle(true)}
+                                        />
+                                    </label>
+
+                                    <label style={{ display: "grid", gap: 6 }}>
+                                        <div style={{ fontSize: 12, opacity: 0.8 }}>Max tokens</div>
+                                        <input
+                                            type="number"
+                                            step="16"
+                                            min="16"
+                                            max="4096"
+                                            value={conv.maxTokens}
+                                            onChange={(e) =>
+                                                updateConv(conv.id, (c) => ({ ...c, maxTokens: clamp(Number(e.target.value), 16, 4096), updatedAt: now() }))
+                                            }
+                                            disabled={isStreaming}
+                                            style={inputStyle(true)}
+                                        />
+                                    </label>
+                                </div>
+                            </div>
+                        ) : (
+                            <div style={{ fontSize: 13, opacity: 0.8 }}>No active chat.</div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -1492,7 +1653,7 @@ function MessageRow(props: {
 
     const bubbleBg = isUser ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
     const bubbleBorder = isUser ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.10)";
-    const showActions = !(isUser && props.isEditing);
+    const showActions = !props.isStreaming && m.status !== "streaming" && !(isUser && props.isEditing);
 
     const bubbleStyle: React.CSSProperties = {
         borderRadius: 16,
@@ -1565,7 +1726,7 @@ function MessageRow(props: {
                             </div>
                         ) : isAssistant ? (
                             <>
-                                <Markdown text={m.content} />
+                                <Markdown text={m.content} showCodeCopy={showActions} />
                                 {m.status === "error" && m.error && (
                                     <div style={{ marginTop: 10, color: "rgba(255,180,180,0.95)", fontSize: 13 }}>
                                         Error: {m.error}
