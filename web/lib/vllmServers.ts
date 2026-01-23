@@ -2,6 +2,7 @@ export type ServerModel = {
     id: string;
     label?: string;
     modalities?: string[];
+    thinking?: boolean;
 };
 
 export type VllmServer = {
@@ -59,6 +60,16 @@ function normalizeModalities(raw: unknown): string[] | undefined {
     return out.length ? out : undefined;
 }
 
+function normalizeBooleanFlag(raw: unknown): boolean | undefined {
+    if (typeof raw === "boolean") return raw;
+    if (typeof raw === "string") {
+        const trimmed = raw.trim().toLowerCase();
+        if (trimmed === "true") return true;
+        if (trimmed === "false") return false;
+    }
+    return undefined;
+}
+
 function normalizeModels(raw: unknown): ServerModel[] | undefined {
     if (!raw) return undefined;
     let list: unknown = raw;
@@ -96,6 +107,9 @@ function normalizeModels(raw: unknown): ServerModel[] | undefined {
                 input?: unknown;
                 inputType?: unknown;
                 vision?: unknown;
+                thinking?: unknown;
+                reasoning?: unknown;
+                isThinking?: unknown;
             };
             const id = typeof rec.id === "string" ? rec.id.trim() : "";
             if (!id || seen.has(id)) continue;
@@ -103,10 +117,12 @@ function normalizeModels(raw: unknown): ServerModel[] | undefined {
             const modalities = normalizeModalities(
                 rec.modalities ?? rec.modality ?? rec.input ?? rec.inputType ?? (rec.vision ? true : undefined)
             );
+            const thinking = normalizeBooleanFlag(rec.thinking ?? rec.reasoning ?? rec.isThinking);
             out.push({
                 id,
                 label: typeof rec.label === "string" ? rec.label : typeof rec.name === "string" ? rec.name : undefined,
                 modalities,
+                thinking,
             });
         }
     }

@@ -29,6 +29,7 @@ type MessageMeta = {
     totalTokens?: number;
     estTokens?: number; // usage が無い場合の推定
     model?: string;
+    serverId?: string;
 };
 
 type Message = {
@@ -61,6 +62,7 @@ type ModelInfo = {
     ownedBy?: string;
     object?: string;
     modalities?: string[];
+    thinking?: boolean;
 };
 
 type ModelOption = {
@@ -70,6 +72,7 @@ type ModelOption = {
     serverId?: string;
     serverName?: string;
     isVision?: boolean;
+    isThinking?: boolean;
 };
 
 type ServerConfig = {
@@ -132,6 +135,16 @@ function normalizeModalities(raw: unknown): string[] | undefined {
     return out.length ? out : undefined;
 }
 
+function normalizeBooleanFlag(raw: unknown): boolean | undefined {
+    if (typeof raw === "boolean") return raw;
+    if (typeof raw === "string") {
+        const trimmed = raw.trim().toLowerCase();
+        if (trimmed === "true") return true;
+        if (trimmed === "false") return false;
+    }
+    return undefined;
+}
+
 function normalizeModelList(raw: unknown): ModelInfo[] {
     if (!Array.isArray(raw)) return [];
     const seen = new Set<string>();
@@ -158,6 +171,9 @@ function normalizeModelList(raw: unknown): ModelInfo[] {
                 input?: unknown;
                 inputType?: unknown;
                 vision?: unknown;
+                thinking?: unknown;
+                reasoning?: unknown;
+                isThinking?: unknown;
             };
             const id = typeof rec.id === "string" ? rec.id.trim() : "";
             if (!id || seen.has(id)) continue;
@@ -165,12 +181,14 @@ function normalizeModelList(raw: unknown): ModelInfo[] {
             const modalities = normalizeModalities(
                 rec.modalities ?? rec.modality ?? rec.input ?? rec.inputType ?? (rec.vision ? true : undefined)
             );
+            const thinking = normalizeBooleanFlag(rec.thinking ?? rec.reasoning ?? rec.isThinking);
             out.push({
                 id,
                 label: typeof rec.label === "string" ? rec.label : typeof rec.name === "string" ? rec.name : undefined,
                 ownedBy: typeof rec.ownedBy === "string" ? rec.ownedBy : undefined,
                 object: typeof rec.object === "string" ? rec.object : undefined,
                 modalities,
+                thinking,
             });
         }
     }
@@ -187,6 +205,15 @@ function isVisionModelId(id: string, modalities?: string[]): boolean {
     const lower = id.toLowerCase();
     if (/(^|[-_/])vl([-.]|$)/.test(lower)) return true;
     if (lower.includes("vision") || lower.includes("multimodal") || lower.includes("image")) return true;
+    return false;
+}
+
+function isThinkingModelId(id: string): boolean {
+    if (!id) return false;
+    const lower = id.toLowerCase();
+    if (lower.includes("thinking")) return true;
+    if (lower.includes("reasoning")) return true;
+    if (lower.includes("reasoner")) return true;
     return false;
 }
 
@@ -439,6 +466,7 @@ export default function AppShell() {
                 if (seen.has(key)) continue;
                 seen.add(key);
                 const isVision = isVisionModelId(id, model.modalities);
+                const isThinking = typeof model.thinking === "boolean" ? model.thinking : isThinkingModelId(id);
                 out.push({
                     key,
                     id,
@@ -446,6 +474,7 @@ export default function AppShell() {
                     serverId: server.id,
                     serverName: server.name,
                     isVision,
+                    isThinking,
                 });
             }
         }
@@ -692,6 +721,18 @@ export default function AppShell() {
         return isVisionModelId(trimmed);
     }, [configuredModelOptions]);
 
+    const resolveThinkingSupport = useCallback((modelId: string, serverId?: string) => {
+        const trimmed = modelId.trim();
+        if (!trimmed) return false;
+        const exact = configuredModelOptions.find(
+            (item) => item.id === trimmed && (!serverId || item.serverId === serverId)
+        );
+        if (exact && typeof exact.isThinking === "boolean") return exact.isThinking;
+        const any = configuredModelOptions.find((item) => item.id === trimmed);
+        if (any && typeof any.isThinking === "boolean") return any.isThinking;
+        return isThinkingModelId(trimmed);
+    }, [configuredModelOptions]);
+
     function newConversation(): Conversation {
         const t = now();
         return {
@@ -843,8 +884,11 @@ export default function AppShell() {
                     if (m.id !== params.assistantId) return m;
                     const text = m.content ?? "";
                     const meta: MessageMeta = {
+                        ...m.meta,
                         latencyMs: t1 - t0,
                         estTokens: estimateTokens(text),
+                        model: m.meta?.model ?? (params.modelId?.trim() || undefined),
+                        serverId: m.meta?.serverId ?? (params.serverId?.trim() || undefined),
                     };
                     if (finalUsage) {
                         meta.promptTokens = finalUsage.prompt_tokens;
@@ -866,8 +910,11 @@ export default function AppShell() {
 
                     const text = m.content ?? "";
                     const meta: MessageMeta = {
+                        ...m.meta,
                         latencyMs: t1 - t0,
                         estTokens: estimateTokens(text),
+                        model: m.meta?.model ?? (params.modelId?.trim() || undefined),
+                        serverId: m.meta?.serverId ?? (params.serverId?.trim() || undefined),
                     };
 
                     if (stopped) return { ...m, status: "stopped" as MsgStatus, meta };
@@ -925,6 +972,8 @@ export default function AppShell() {
         setInput("");
         setPendingImage(null);
 
+        const modelId = c.modelId?.trim() || undefined;
+        const serverId = c.serverId?.trim() || undefined;
         const userMsg: Message = {
             id: uid(),
             role: "user",
@@ -939,6 +988,10 @@ export default function AppShell() {
             content: "",
             createdAt: now(),
             status: "streaming",
+            meta: {
+                model: modelId,
+                serverId,
+            },
         };
 
         updateConv(c.id, (conv) => {
@@ -982,12 +1035,18 @@ export default function AppShell() {
             const userIndex = conv.messages.findIndex((m) => m.id === userMsgId && m.role === "user");
             if (userIndex < 0) return;
 
+            const modelId = conv.modelId?.trim() || undefined;
+            const serverId = conv.serverId?.trim() || undefined;
             const assistantMsg: Message = {
                 id: uid(),
                 role: "assistant",
                 content: "",
                 createdAt: now(),
                 status: "streaming",
+                meta: {
+                    model: modelId,
+                    serverId,
+                },
             };
 
             // 重要: ユーザーメッセージは「再利用」し、以降を差し替える（複製しない）
@@ -1281,6 +1340,7 @@ export default function AppShell() {
             serverId: selectedServerId || undefined,
             serverName: selectedServerId ? (servers.find((s) => s.id === selectedServerId)?.name ?? selectedServerId) : undefined,
             isVision: isVisionModelId(model.id, model.modalities),
+            isThinking: typeof model.thinking === "boolean" ? model.thinking : isThinkingModelId(model.id),
         }));
 
     const selectedModelKey = (() => {
@@ -1301,6 +1361,9 @@ export default function AppShell() {
     const supportsVision = Boolean(
         (selectedModelOption && selectedModelOption.isVision) || isVisionModelId(selectedModelId)
     );
+    const supportsThinking = typeof selectedModelOption?.isThinking === "boolean"
+        ? selectedModelOption.isThinking
+        : resolveThinkingSupport(selectedModelId, selectedServerId);
 
     const modelStatus = (() => {
         if (serversLoading) return "Loading servers...";
@@ -1545,6 +1608,22 @@ export default function AppShell() {
                                 {modelStatus}
                             </div>
                         )}
+                        {supportsThinking && (
+                            <div
+                                style={{
+                                    fontSize: 10,
+                                    letterSpacing: "0.08em",
+                                    textTransform: "uppercase",
+                                    padding: "4px 8px",
+                                    borderRadius: 999,
+                                    border: "1px solid rgba(255,255,255,0.18)",
+                                    background: "rgba(255,255,255,0.06)",
+                                    color: "rgba(255,255,255,0.8)",
+                                }}
+                            >
+                                Thinking
+                            </div>
+                        )}
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
                             {isStreaming ? "Streaming…" : "Ready"}
                         </div>
@@ -1568,6 +1647,7 @@ export default function AppShell() {
                                     key={m.id}
                                     m={m}
                                     isStreaming={isStreaming}
+                                    isThinking={resolveThinkingSupport(m.meta?.model ?? selectedModelId, m.meta?.serverId ?? selectedServerId)}
                                     isEditing={editingMsgId === m.id}
                                     editingText={editingText}
                                     onEditingTextChange={setEditingText}
@@ -1885,9 +1965,27 @@ function primaryBtnStyle(isStop: boolean): React.CSSProperties {
     };
 }
 
+function splitThinkingContent(text: string) {
+    const raw = typeof text === "string" ? text : "";
+    const pattern = /<(thinking|think|analysis|reasoning)>([\s\S]*?)<\/\1>/gi;
+    const matches = Array.from(raw.matchAll(pattern));
+    if (!matches.length) {
+        return { reasoning: "", answer: raw, hasReasoning: false };
+    }
+    const reasoning = matches
+        .map((match) => match[2].trim())
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+    pattern.lastIndex = 0;
+    const answer = raw.replace(pattern, "").trim();
+    return { reasoning, answer, hasReasoning: reasoning.length > 0 };
+}
+
 function MessageRow(props: {
     m: Message;
     isStreaming: boolean;
+    isThinking: boolean;
     isEditing: boolean;
     editingText: string;
     onEditingTextChange: (v: string) => void;
@@ -1902,6 +2000,11 @@ function MessageRow(props: {
     const isUser = m.role === "user";
     const isAssistant = m.role === "assistant";
     const hasImage = Boolean(m.image?.dataUrl);
+    const showThinking = props.isThinking && isAssistant && m.status !== "streaming";
+    const thinkingContent = showThinking ? splitThinkingContent(m.content) : null;
+    const thinkingAnswer = thinkingContent ? thinkingContent.answer : m.content;
+    const hasThinkingReasoning = Boolean(thinkingContent?.hasReasoning);
+    const thinkingReasoning = thinkingContent?.reasoning ?? "";
 
     const bubbleBg = isUser ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
     const bubbleBorder = isUser ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.10)";
@@ -1993,7 +2096,45 @@ function MessageRow(props: {
                             </div>
                         ) : isAssistant ? (
                             <>
-                                <Markdown text={m.content} showCodeCopy={showActions} />
+                                {showThinking ? (
+                                    <div style={{ display: "grid", gap: 10 }}>
+                                        {hasThinkingReasoning && (
+                                            <details
+                                                style={{
+                                                    border: "1px dashed rgba(255,255,255,0.18)",
+                                                    borderRadius: 12,
+                                                    padding: "8px 10px",
+                                                    background: "rgba(255,255,255,0.03)",
+                                                }}
+                                            >
+                                                <summary
+                                                    style={{
+                                                        cursor: "pointer",
+                                                        fontSize: 12,
+                                                        letterSpacing: "0.02em",
+                                                        textTransform: "uppercase",
+                                                        color: "rgba(255,255,255,0.72)",
+                                                        outline: "none",
+                                                    }}
+                                                >
+                                                    Thinking
+                                                </summary>
+                                                <div style={{ marginTop: 8 }}>
+                                                    <Markdown text={thinkingReasoning} showCodeCopy={showActions} />
+                                                </div>
+                                            </details>
+                                        )}
+                                        {thinkingAnswer.trim().length > 0 ? (
+                                            <Markdown text={thinkingAnswer} showCodeCopy={showActions} />
+                                        ) : hasThinkingReasoning ? (
+                                            <div style={{ fontSize: 13, opacity: 0.7 }}>No final answer.</div>
+                                        ) : (
+                                            <Markdown text={m.content} showCodeCopy={showActions} />
+                                        )}
+                                    </div>
+                                ) : (
+                                    <Markdown text={m.content} showCodeCopy={showActions} />
+                                )}
                                 {m.status === "error" && m.error && (
                                     <div style={{ marginTop: 10, color: "rgba(255,180,180,0.95)", fontSize: 13 }}>
                                         Error: {m.error}
